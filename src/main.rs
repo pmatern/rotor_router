@@ -121,7 +121,7 @@ fn init_worker (listener: TcpListener, context: Arc<ServerContext>) -> LoopInsta
 }
 
 fn main() {
-    println!("Starting internal router on http://127.0.0.1:3000/");
+    println!("Starting router on http://127.0.0.1:3000/");
 
     let mut workers = Vec::new();
     let lst = TcpListener::bind(&"127.0.0.1:3000".parse().unwrap()).unwrap();
