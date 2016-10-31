@@ -1,0 +1,9 @@
+[package]
+name = "rotor_router"
+version = "0.1.0"
+authors = ["pmatern"]
+
+[dependencies]
+rotor-http = "0.7.0"
+rotor = "0.6.3"
+num_cpus = "1.1.0"
