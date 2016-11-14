@@ -29,12 +29,20 @@ impl Counter for ServerContext {
 }
 
 #[derive(Debug, Clone)]
-enum HelloWorld {
-    Hello,
-    GetNum,
-    HelloName(String),
-    PageNotFound,
+struct Downstream {
 }
+
+#[derive(Debug, Clone)]
+enum Router {
+    ForwardingRequest(Downstream),
+    ForwardingResponse(Downstream),
+    NoRoute,
+}
+
+fn stream_chunk(_res: &mut Response, _data: &[u8], _downstream: &Downstream) {
+   
+}
+
 
 fn send_string(res: &mut Response, data: &[u8]) {
     res.status(200, "OK");
@@ -44,57 +52,77 @@ fn send_string(res: &mut Response, data: &[u8]) {
     res.done();
 }
 
-impl Server for HelloWorld {
+fn lookup_route(head: Head) -> Option<Downstream> {
+    match head.path {
+        "/downstream" => Some(Downstream{}),
+        _ => None
+    }
+}
+
+impl Server for Router {
     type Seed = ();
     type Context = Arc<ServerContext>;
 
-    fn headers_received(_seed: (), head: Head, _res: &mut Response, scope: &mut Scope<Arc<ServerContext>>) -> Option<(Self, RecvMode, Time)>
+    fn headers_received(_seed: (), head: Head, _response: &mut Response, scope: &mut Scope<Arc<ServerContext>>) -> Option<(Self, RecvMode, Time)>
     {
         scope.increment();
 
-        let next_machine = match head.path {
-            "/" => HelloWorld::Hello,
-            "/num" => HelloWorld::GetNum,
-            p if p.starts_with('/') => HelloWorld::HelloName(p[1..].to_string()),
-            _ => HelloWorld::PageNotFound
+        let next_machine = match lookup_route(head) {
+            Some(destination) => Router::ForwardingRequest(destination),
+            None => Router::NoRoute
         };
 
-        Some((next_machine, RecvMode::Buffered(1024), scope.now() + Duration::from_secs(10)))
+        Some((next_machine, RecvMode::Progressive(1024), scope.now() + Duration::from_secs(10)))
     } 
 
-    fn request_received(self, _data: &[u8], res: &mut Response, scope: &mut Scope<Arc<ServerContext>>) -> Option<Self>
+    fn request_received(self, _data: &[u8], _response: &mut Response, _scope: &mut Scope<Arc<ServerContext>>) -> Option<Self>
     {
-        match self {
-            HelloWorld::Hello => {
-                send_string(res, b"Hello World!\n");
+        unreachable!();
+    }
+
+    fn request_chunk(self, chunk: &[u8], response: &mut Response, _scope: &mut Scope<Arc<ServerContext>>) -> Option<Self>
+    {
+        let next_machine = match self {
+            Router::ForwardingRequest(downstream) => {
+                stream_chunk(response, chunk, &downstream);
+                Router::ForwardingRequest(downstream)
             }
-            HelloWorld::GetNum => {
-                send_string(res,
-                    format!("This host has been visited {} times\n", scope.get()).as_bytes());
+            Router::NoRoute => {
+                self
             }
-            HelloWorld::HelloName(name) => {
-                send_string(res, format!("Hello {}!\n", name).as_bytes());
-            }
-            HelloWorld::PageNotFound => {
-                let data = b"404 - Page not found";
-                res.status(404, "Not Found");
-                res.add_length(data.len() as u64).unwrap();
-                res.done_headers().unwrap();
-                res.write_body(data);
-                res.done();
-            }
+            _ => self
+        };
+
+        match next_machine {
+            Router::ForwardingRequest(_) => Some(next_machine),
+            Router::NoRoute => Some(next_machine),
+            _ => None
         }
-        None
     }
 
-    fn request_chunk(self, _chunk: &[u8], _response: &mut Response, _scope: &mut Scope<Arc<ServerContext>>) -> Option<Self>
+    fn request_end(self, response: &mut Response, _scope: &mut Scope<Arc<ServerContext>>) -> Option<Self>
     {
-        unreachable!();
-    }
+        let next_machine = match self {
+            Router::ForwardingRequest(downstream) => {
+                send_string(response, b"Response from downstream");
+                Router::ForwardingResponse(downstream)
+            }
+            Router::NoRoute => {
+                let data = b"404 - Route not found";
+                response.status(404, "Not Found");
+                response.add_length(data.len() as u64).unwrap();
+                response.done_headers().unwrap();
+                response.write_body(data);
+                response.done();
+                self
+            }
+            _ => self
+        };
 
-    fn request_end(self, _response: &mut Response, _scope: &mut Scope<Arc<ServerContext>>) -> Option<Self>
-    {
-        unreachable!();
+        match next_machine {
+            Router::ForwardingResponse(_) => Some(next_machine),
+            _ => None
+        }
     }
 
     fn timeout(self, _response: &mut Response, _scope: &mut Scope<Arc<ServerContext>>) -> Option<(Self, Time)>
@@ -108,13 +136,13 @@ impl Server for HelloWorld {
     }
 }
 
-fn init_worker (listener: TcpListener, context: Arc<ServerContext>) -> LoopInstance<Fsm<HelloWorld, TcpListener>> {
+fn init_worker <'a> (listener: TcpListener, context: Arc<ServerContext>) -> LoopInstance<Fsm<Router, TcpListener>> {
     let event_loop = Loop::new(&rotor::Config::new()).unwrap();
 
     let mut loop_inst= event_loop.instantiate(context);
 
     loop_inst.add_machine_with(|scope| {
-        Fsm::<HelloWorld, _>::new(listener, (), scope)
+        Fsm::<Router, _>::new(listener, (), scope)
     }).unwrap();
 
     loop_inst
